@@ -1,0 +1,520 @@
+---
+title: "HR case study"
+author: "Yuting"
+date: "11 January 2021"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE}
+#### Load required libraries
+library(data.table)
+library(ggplot2)
+library(ggmosaic)
+library(readr)
+library(readxl)
+library(prediction)
+HR_data <- read.csv("~/online projects/QuantSpark/HR_comma_sep.csv")
+```
+
+### Client brief
+Concern: retention of high performing employees
+
+Challengs:
+
+1. Improvce retention of high performing colleagues
+
+2. Predict which of its employees is most at risk of leaving
+
+
+## Exploratory data analysis
+
+### Statistical overview
+
+```{r}
+str(HR_data)        # shows variable types
+summary(HR_data)    # summary table
+```
+
+The summary table shows that
+
+1) Turnover rate = 0.24
+
+2) Mean satisfaction level = 0.61
+
+
+```{r}
+aggregate(HR_data[,c("satisfaction_level","last_evaluation","number_project",
+     "average_montly_hours","time_spend_company","Work_accident", 
+     "promotion_last_5years")], by=list(Category=HR_data$left), FUN=mean)
+```
+
+The table shows variables difference between retention and non-retention group.
+
+### Visualisation
+
+#### Correlation
+
+```{r fig.align="center"}
+library(corrplot)
+correlations <- cor(HR_data[,c(1:8)], use="pairwise", method="spearman")
+
+corrplot(correlations, tl.srt = 30,title='Correlation Matrix', mar=c(0,1,1,0),
+         method="number", type="upper", order="hclust")
+```
+
+Positive correlation (>0.3): 
+
+Evaluation & number of project
+
+Evaluation & Average monthly hours
+
+Number of project & Average monthly hours
+
+Negative correlation (<-0.3):
+
+Turnover rate & Satisfaction level
+
+Conclusion:
+
+1. Employees with higher working hours and more projects tends to have higher evaluation.
+
+2. Higher satisfaction leads to less probability of turnover.
+
+
+### Relationship between dependent and independent variables
+
+#### Turnover vs Satisfaction level & Evaluation rate
+
+
+```{r fig.align="center"}
+qplot(satisfaction_level, last_evaluation, data=HR_data, color=factor(left)) +
+  scale_colour_discrete(name="Turnover", labels=c("stay","left"))
+```
+
+There are 3 clusters for left employees.
+
+a) Employees with high evaluation rate(>0.75) and low satisfaction level(<0.1).
+
+b) Employees with low evaluation rate(0.45-0.6) and medium to low satisfaction level(0.3-0.5).
+
+c) Employees with high evaluation rate(>0.8) and high satisfaction rate(0.75-0.9).
+
+Therefore, low retention of high performing employees does exist.
+
+### Turnover vs average_montly_hours & time_spend_company
+```{r fig.align="center"}
+qplot(average_montly_hours, time_spend_company, data=HR_data, color=factor(left)) + 
+  scale_colour_discrete(name="Turnover", labels=c("stay","left"))
+```
+
+There are some trends and mainly 2 clusters for employees that have left.
+
+a) Employees that spend between 3yrs and 6yrs with company tend to leave. 
+
+b) Employees that spend 4-6 yrs with the company and have long monthly working hours (>225) tend to leave.
+
+c) Employees that spend 3 yrs with company and have monthly working hour 125-160 hrs tend to leave.
+
+
+### Number of project vs Turnover
+```{r fig.align="center"}
+ggplot(HR_data, aes(x=number_project, fill=factor(left))) + geom_bar() +
+  scale_fill_discrete(name="Turnover", labels=c("stay","left"))
+```
+
+a) Employees that have worked on two, six and seven projects tend to leave. 
+
+b) All employees that worked on seven projects have left.
+
+c) There is an increasing trend of leaving as number of project builds up.
+
+### Promotion vs Turnover
+
+```{r fig.align="center"}
+vis_3<-table(HR_data$promotion_last_5years,HR_data$left)
+d_vis_3<-as.data.frame(vis_3)
+#print(d_vis_1)
+
+ggplot(d_vis_3, aes(x=Var1,y=Freq,fill=Var2)) +
+ geom_bar(position="dodge",stat='identity') + coord_flip() +
+  labs(x="If promotion in lst 5 years", size="horsepower") +
+  scale_fill_discrete(name="Turnover", labels=c("stay","left"))
+```
+
+Overall the promotion rate in the last five years was low. For people that have left, almost none received promotion.
+
+### Department vs Turnover
+
+
+```{r fig.align="center"}
+vis_2<-table(HR_data$department,HR_data$left)
+left_rate = vis_2[,2]/( vis_2[,1] + vis_2[,2])
+
+x=as.data.frame(left_rate)
+library(data.table)
+x=setDT(x, keep.rownames = "department")[]
+
+ggplot(x, aes(department, left_rate, fill=department)) +
+  geom_col()+ 
+          theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+```
+
+HR department has the highest turnover rate while management has the least.
+
+
+### Salary vs Turnover
+
+```{r fig.align="center"}
+vis_2<-table(HR_data$salary,HR_data$left)
+left_rate = vis_2[,2]/( vis_2[,1] + vis_2[,2])
+
+x=as.data.frame(left_rate)
+library(data.table)
+x=setDT(x, keep.rownames = "salary")[]
+
+ggplot(x, aes(salary, left_rate, fill=salary)) +
+  geom_col()+ 
+          theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+```
+
+Compared to employees who stayed, turnover group has much higher relative frequencies for low salary employees. Not many employees with high salary left.
+
+
+## Modeling
+
+### Data splitting
+
+```{r}
+set.seed(1234)
+train_ind=sample(nrow(HR_data),floor(0.75 * nrow(HR_data)))
+# separating the data into ratio 2:1
+train=HR_data[train_ind,]
+test=HR_data[-train_ind,]
+```
+
+### 1. Logistic regression
+Logistic regression can shows how the independent variables can affect the dependent variable(left).
+
+```{r}
+model_LR <- glm(left ~.,family=binomial(link='logit'),data=train)
+summary(model_LR)
+```
+
+Within the significant variables:
+
+Negative correlation: satisfaction_level, number_project, Work_accident, promotion_last_5years, departmentRandD.
+
+It means that the higher these variables, the less employees would leave.
+
+Positive correlation: last_evaluation, average_montly_hours, time_spend_company, salarylow, salarymedium.
+
+It means that the higher these variables, more likely emoployees would leave.
+
+
+#### Evaluating the model
+
+```{r}
+p_LR <- predict(model_LR, newdata=subset(test,select=-c(left)), type="response")
+p2_LR=floor(p_LR+0.5) 
+
+```
+
+```{r}
+library(caret)
+library(e1071)
+confusionMatrix(data = as.factor(p2_LR), reference = as.factor(test$left))
+```
+
+Because there could be some non-linear and complex relationship between variables, we also want to build decision tree model that may outperform linear regression.
+
+
+### Decision tree
+
+```{r}
+library(rpart)
+library(rpart.plot)
+fit_DT <- rpart(left~., data = train, method = 'class')
+rpart.plot(fit_DT, extra=104, box.palette="GnBu", branch.lty=3, shadow.col="gray", nn=TRUE)
+```
+
+Interpretation of the decision tree:
+
+1) The top node shows that 23 percent employees turnoverd. Also satisfaction level has the biggest impact in turnover. 
+2) 75% employees have satisfaction level >= 0.47 with a retention probability of 91 percent.
+3) If the employee also have spent less than 5 years at company then the probability of retention would be 0.99.
+
+Most possible levaing factors:
+
+1) satisfaction level <0.47 & number of project <3 & last evaluation <0.46
+2) Satisfaction level <0.12 & #project >=3
+3) satisfaction level >= 0.47 & time spent with company >6 & last evaluation >0.81 & average monthly hours >217 
+
+
+```{r}
+predict_left <-predict(fit_DT, subset(test,select=-c(left)), type = 'class')
+confusionMatrix(data = as.factor(predict_left), reference = as.factor(test$left))
+```
+
+It does have a higher accuracy.
+
+
+## High performing employees
+
+We define high performing employees to be the ones with evaluation rate higher than 0.72.
+
+```{r cars}
+# evaluation higher than mean/median
+high_data=subset(HR_data,  last_evaluation > 0.72)
+```
+## Exploratory data analysis
+
+### Statistical overview
+
+```{r}
+str(high_data)        # shows variable types
+summary(high_data)    # summary table
+```
+
+The summary table shows that
+
+1) Turnover rate = 0.26
+
+2) Mean satisfaction level = 0.63
+
+
+```{r}
+aggregate(high_data[,c("satisfaction_level","last_evaluation","number_project",
+     "average_montly_hours","time_spend_company","Work_accident", 
+     "promotion_last_5years")], by=list(Category=high_data$left), FUN=mean)
+```
+
+The table shows variables difference between retention and non-retention group.
+
+### Visualisation
+
+#### Correlation
+
+```{r fig.align="center"}
+library(corrplot)
+correlations <- cor(high_data[,c(1:8)], use="pairwise", method="spearman")
+
+corrplot(correlations, tl.srt = 30,title='Correlation Matrix', mar=c(0,1,1,0),
+         method="number", type="upper", order="hclust")
+```
+
+Positive correlation (>0.3): 
+
+Left & number of project
+
+Left & Average monthly hours
+
+Left & Years with company
+
+Number of project & Average monthly hours
+
+Negative correlation (<-0.3):
+
+Number of project & Satisfaction level
+
+Conclusion:
+
+1. High number of projects, working hours and years with company could leads to turnover.
+
+2. Higher project count leads to lower satisfaction rate.
+
+
+### Relationship between dependent and independent variables
+
+#### Turnover vs Satisfaction level & Evaluation rate
+
+
+```{r fig.align="center"}
+qplot(satisfaction_level, last_evaluation, data=high_data, color=factor(left)) + 
+  scale_colour_discrete(name="Turnover", labels=c("stay","left"))
+```
+
+
+
+### Turnover vs average_montly_hours & time_spend_company
+```{r fig.align="center"}
+qplot(average_montly_hours, time_spend_company, data=high_data, color=factor(left)) + 
+  scale_colour_discrete(name="Turnover", labels=c("stay","left"))
+```
+
+There are some trends and mainly 2 clusters for employees that have left.
+
+a) Employees that spend between 3yrs and 6yrs with company tend to leave. 
+
+b) Employees that spend 4-6 yrs with the company and have long monthly working hours (>225) tend to leave.
+
+
+
+
+### Number of project vs Turnover
+```{r fig.align="center"}
+ggplot(high_data, aes(x=number_project, fill=factor(left))) + geom_bar() +
+  scale_fill_discrete(name="Turnover", labels=c("stay","left"))
+```
+
+a) All employees that worked on seven projects have left.
+
+b) There is an increasing trend of leaving as number of project builds up.
+
+### Promotion vs Turnover
+
+```{r fig.align="center"}
+vis_3<-table(high_data$promotion_last_5years,high_data$left)
+d_vis_3<-as.data.frame(vis_3)
+#print(d_vis_1)
+
+ggplot(d_vis_3, aes(x=Var1,y=Freq,fill=Var2)) +
+ geom_bar(position="dodge",stat='identity') + coord_flip() +
+  labs(x="If promotion in lst 5 years", size="horsepower") +
+  scale_fill_discrete(name="Turnover", labels=c("stay","left"))
+```
+
+Overall the promotion rate in the last five years was low. For people that have left, almost none received promotion.
+
+### Department vs Turnover
+
+```{r fig.align="center"}
+vis_2<-table(high_data$department,high_data$left)
+turnover_rate = vis_2[,2]/( vis_2[,1] + vis_2[,2])
+
+x=as.data.frame(turnover_rate)
+library(data.table)
+x=setDT(x, keep.rownames = "department")[]
+
+ggplot(x, aes(department, turnover_rate, fill=department)) +
+  geom_col()+ 
+          theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+```
+
+Technical department has the highest turnover rate while management has the least.
+
+
+### Salary vs Turnover
+
+```{r fig.align="center"}
+vis_2<-table(high_data$salary,high_data$left)
+turnover_rate = vis_2[,2]/( vis_2[,1] + vis_2[,2])
+
+x=as.data.frame(turnover_rate)
+library(data.table)
+x=setDT(x, keep.rownames = "salary")[]
+
+ggplot(x, aes(salary, turnover_rate, fill=salary)) +
+  geom_col()+ 
+          theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+```
+
+Compared to employees who stayed, turnover group has much higher relative frequencies for low salary employees. Not many employees with high salary left.
+
+
+## Modeling
+
+### Data splitting
+
+```{r}
+set.seed(1234)
+train_ind=sample(nrow(high_data),floor(0.75 * nrow(high_data)))
+# separating the data into ratio 2:1
+train=high_data[train_ind,]
+test=high_data[-train_ind,]
+```
+
+### 1. Logistic regression
+
+Logistic regression can shows how the independent variables can affect the dependent variable(left).
+
+
+```{r}
+model_LR <- glm(left ~.,family=binomial(link='logit'),data=train)
+summary(model_LR)
+```
+
+Within the significant variables:
+
+Negative correlation: Work_accident, promotion_last_5years
+
+It means that the higher these variables, the less employees would leave.
+
+Positive correlation: last_evaluation, number_project, average_montly_hours, time_spend_company, salarylow, salarymedium.
+
+It means that the higher these variables, more likely emoployees would leave.
+
+
+#### Evaluating the model
+
+```{r}
+p_LR <- predict(model_LR, newdata=subset(test,select=-c(left)), type="response")
+p2_LR=floor(p_LR+0.5) 
+
+```
+
+```{r}
+library(caret)
+library(e1071)
+confusionMatrix(data = as.factor(p2_LR), reference = as.factor(test$left))
+```
+
+Because there could be some non-linear and complex relationship between variables, we also want to build decision tree model that may outperform linear regression.
+
+
+### Decision tree
+
+```{r}
+library(rpart)
+library(rpart.plot)
+fit_DT <- rpart(left~., data = train, method = 'class')
+rpart.plot(fit_DT, extra=104, box.palette="GnBu", branch.lty=3, shadow.col="gray", nn=TRUE)
+```
+
+Most possible levaing factors:
+
+1) satisfaction level <0.12 
+2) Satisfaction level >0.72 & monthly working hours >217 & years at company =6, number of project > 4
+
+
+```{r}
+predict_left <-predict(fit_DT, subset(test,select=-c(left)), type = 'class')
+confusionMatrix(data = as.factor(predict_left), reference = as.factor(test$left))
+```
+
+
+```{r}
+library(randomForest)
+rf_classifier = randomForest(factor(left) ~ ., data=train, ntree=100, mtry=2, importance=TRUE)                                                            # 
+rf_classifier
+varImpPlot(rf_classifier)
+```
+
+```{r}
+prediction_for_table <- predict(rf_classifier,subset(test,select=-c(left)))
+table_rf=table(observed=test$left,predicted=prediction_for_table)
+```
+
+```{r}
+accuracy_Test <- sum(diag(table_rf)) / sum(table_rf)
+print(paste('Accuracy for test', accuracy_Test))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
